@@ -1,8 +1,11 @@
+import time
+
+from src.ArmIK import ArmIK
 from src.Gaits import GaitController
 from src.StanceController import StanceController
 from src.SwingLegController import SwingController
 from src.Utilities import clipped_first_order_filter
-from src.State import BehaviorState, State
+from src.State import BehaviorState, State, ArmState, GripperState
 
 import numpy as np
 from transforms3d.euler import euler2mat, quat2euler
@@ -28,10 +31,20 @@ class Controller:
         self.gait_controller = GaitController(self.config)
         self.swing_controller = SwingController(self.config)
         self.stance_controller = StanceController(self.config)
+        self.arm_controller = ArmIK()
 
         self.hop_transition_mapping = {BehaviorState.REST: BehaviorState.HOP, BehaviorState.HOP: BehaviorState.FINISHHOP, BehaviorState.FINISHHOP: BehaviorState.REST, BehaviorState.TROT: BehaviorState.HOP}
         self.trot_transition_mapping = {BehaviorState.REST: BehaviorState.TROT, BehaviorState.TROT: BehaviorState.REST, BehaviorState.HOP: BehaviorState.TROT, BehaviorState.FINISHHOP: BehaviorState.TROT}
         self.activate_transition_mapping = {BehaviorState.DEACTIVATED: BehaviorState.REST, BehaviorState.REST: BehaviorState.DEACTIVATED}
+        self.arm_transition_mapping = {
+            ArmState.DEACTIVATED: ArmState.RUNNING,
+            ArmState.RUNNING: ArmState.DEACTIVATED
+        }
+        self.gripper_transition_mapping = {
+            GripperState.NEUTRAL: GripperState.OPEN,
+            GripperState.OPEN: GripperState.CLOSED,
+            GripperState.CLOSED: GripperState.NEUTRAL
+        }
 
 
     def step_gait(self, state, command):
@@ -79,6 +92,20 @@ class Controller:
             state.behavior_state = self.trot_transition_mapping[state.behavior_state]
         elif command.hop_event:
             state.behavior_state = self.hop_transition_mapping[state.behavior_state]
+        if command.arm_event:
+            state.arm_state = self.arm_transition_mapping[state.arm_state]
+        if command.gripper_event:
+            state.gripper_state = self.gripper_transition_mapping[state.gripper_state]
+            print ("new gripper state:", state.gripper_state)
+
+        if state.arm_state is not ArmState.DEACTIVATED:
+            state.arm_x += command.arm_x_diff
+            state.arm_y += command.arm_y_diff
+            state.arm_z += command.arm_z_diff
+            if time.time() - self.config.arm_dt > state.last_ik:
+                state.arm_joint_angles = self.arm_controller.pos2joints(np.array([state.arm_x, state.arm_y, state.arm_z]))
+                state.last_ik = time.time()
+
 
         if state.behavior_state == BehaviorState.TROT:
             state.foot_locations, contact_modes = self.step_gait(
